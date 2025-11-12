@@ -24,12 +24,25 @@ import matplotlib.pyplot as plt
 
 # Paths
 BASE_DIR = os.path.abspath("./kather_kimianet_workspace")
+if not os.path.exists(BASE_DIR):
+    os.makedirs(BASE_DIR)
 DATA_DIR = os.path.join(BASE_DIR, "data")
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
 RAW_DIR  = os.path.join(DATA_DIR, "raw")
+if not os.path.exists(RAW_DIR):
+    os.makedirs(RAW_DIR)
 IMG_DIR  = os.path.join(DATA_DIR, "Kather_texture_2016_image_tiles_5000")
+if not os.path.exists(IMG_DIR):
+    os.makedirs(IMG_DIR)
 LARGE_DIR= os.path.join(DATA_DIR, "Kather_texture_2016_larger_images_10")
+if not os.path.exists(LARGE_DIR):
+    os.makedirs(LARGE_DIR)
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")    
+if not os.path.exists(WEIGHTS_DIR):
+    os.makedirs(WEIGHTS_DIR)
 KIMIANET_WEIGHTS_PATH = os.path.join(WEIGHTS_DIR, "KimiaNetKerasWeights.h5")  
+
 
 
 # Training config
@@ -220,6 +233,23 @@ for imgs, labs in train_ds.take(1):
 backbone = keras.applications.DenseNet121(include_top=False, weights=None, input_shape=(IMG_SIZE, IMG_SIZE, 3))
 
 # Try to load KimiaNet weights
+if not os.path.isfile(KIMIANET_WEIGHTS_PATH):
+    print(f"KimiaNet weights not found at {KIMIANET_WEIGHTS_PATH}, attempting to download...")
+    try:
+        import urllib.request
+        keras_weights_url = "https://github.com/KimiaLabMayo/KimiaNet/raw/refs/heads/main/KimiaNet_Weights/weights/KimiaNetKerasWeights.h5"
+        pytorch_weights_url = "https://github.com/KimiaLabMayo/KimiaNet/raw/refs/heads/main/KimiaNet_Weights/weights/KimiaNetPyTorchWeights.pth"
+
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(KIMIANET_WEIGHTS_PATH), exist_ok=True)
+
+        # Download Keras weights
+        print(f"Downloading Keras weights from {keras_weights_url}")
+        urllib.request.urlretrieve(keras_weights_url, KIMIANET_WEIGHTS_PATH)
+        print(f"Downloaded KimiaNet weights to {KIMIANET_WEIGHTS_PATH}")
+    except Exception as e:
+        print(f"Failed to download KimiaNet weights: {e}")
+
 if os.path.isfile(KIMIANET_WEIGHTS_PATH):
     try:
         print("Loading KimiaNet weights from:", KIMIANET_WEIGHTS_PATH)
@@ -248,10 +278,40 @@ model.summary()
 
 # ## 6. Train — Phase A (head only)
 
+
+
+
 callbacks = [
     keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 ]
 hist_a = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS_WARMUP, callbacks=callbacks)
+
+
+
+import matplotlib.pyplot as plt
+def plot_loss_vs_epochs(history):
+    """
+    Plot the training and validation loss vs epochs
+
+    Parameters:
+    -----------
+    history : History object
+        The history object returned by model.fit()
+    """
+    plt.figure(figsize=(10, 6))
+    plt.plot(history.history['loss'], label='Training Loss')
+    if 'val_loss' in history.history:
+        plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Loss vs Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
+    plt.xticks(range(len(history.history['loss'])))
+    plt.show()
+
+plot_loss_vs_epochs(hist_a)
+
 
 
 # ## 7. Train — Phase B (gradual unfreeze last dense block)
@@ -278,6 +338,9 @@ model.compile(
 hist_b = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS_FINETUNE, callbacks=callbacks)
 
 
+plot_loss_vs_epochs(hist_b)
+
+
 # ## 8. Evaluation — metrics & confusion matrix
 
 from sklearn.metrics import classification_report, confusion_matrix
@@ -295,16 +358,27 @@ print(classification_report(y_true, y_pred, target_names=class_names, digits=4))
 
 cm = confusion_matrix(y_true, y_pred)
 fig = plt.figure(figsize=(7,6))
-plt.imshow(cm, interpolation='nearest')
+im = plt.imshow(cm, interpolation='nearest')
 plt.title('Confusion Matrix')
 plt.colorbar()
 tick_marks = np.arange(len(class_names))
 plt.xticks(tick_marks, class_names, rotation=45, ha='right')
 plt.yticks(tick_marks, class_names)
+
+# Add text annotations to the heatmap
+thresh = cm.max() / 2.
+for i in range(cm.shape[0]):
+    for j in range(cm.shape[1]):
+        if cm[i, j] >= thresh:
+            plt.text(j, i, format(cm[i, j], 'd'),
+                 ha="center", va="center",
+                     color="black")
+
+
 plt.xlabel('Predicted')
 plt.ylabel('True')
 plt.tight_layout()
-plt.show()
+
 
 
 # ## 10. Save model & class mapping
