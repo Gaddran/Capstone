@@ -13,7 +13,7 @@
 
 # ## 0. Configuration & Imports
 
-import os, sys, glob, zipfile, shutil, random, math, itertools, pathlib, time
+import os, glob, random 
 from dataclasses import dataclass
 import numpy as np
 import tensorflow as tf
@@ -217,11 +217,21 @@ def make_ds(samples, training=False, batch_size=BATCH_SIZE):
         ds = ds.map(augment, num_parallel_calls=AUTOTUNE)
     ds = ds.batch(batch_size).prefetch(AUTOTUNE)
     return ds
+train_ds_path = os.path.join(DATA_DIR, "Train_ds")
+val_ds_path = os.path.join(DATA_DIR, "Val_ds")
+test_ds_path = os.path.join(DATA_DIR, "Test_ds")
 
-train_ds = make_ds(train_samples, training=True)
-val_ds   = make_ds(val_samples, training=False)
-test_ds  = make_ds(test_samples, training=False)
-
+if os.path.exists(train_ds_path) and os.path.exists(val_ds_path) and os.path.exists(test_ds_path):
+    train_ds = tf.data.Dataset.load(train_ds_path)
+    val_ds = tf.data.Dataset.load(val_ds_path)
+    test_ds = tf.data.Dataset.load(test_ds_path)
+else:
+    train_ds = make_ds(train_samples, training=True)
+    val_ds = make_ds(val_samples, training=False)
+    test_ds = make_ds(test_samples, training=False)
+    train_ds.save(train_ds_path)
+    val_ds.save(val_ds_path)
+    test_ds.save(test_ds_path)
 for imgs, labs in train_ds.take(1):
     print("Batch:", imgs.shape, labs.shape)
 
@@ -277,9 +287,6 @@ model.summary()
 
 
 # ## 6. Train — Phase A (head only)
-
-
-
 
 callbacks = [
     keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
@@ -396,4 +403,247 @@ print('Saved model to:', model_path)
 with open(os.path.join(SAVE_DIR, 'class_to_idx.json'), 'w') as f:
     json.dump(class_to_idx, f, indent=2)
 print('Saved class mapping.')
+
+
+SAVE_DIR = os.path.join(BASE_DIR, 'artifacts')
+model_path = os.path.join(SAVE_DIR, 'kimianet_kather_classifier.keras')
+
+model = tf.keras.models.load_model(model_path)
+
+
+
+import os
+import json
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from PIL import Image
+from pathlib import Path
+import matplotlib.pyplot as plt
+from IPython.display import display, Image as IPImage
+import ipywidgets as widgets
+from ipywidgets import interact, interactive, fixed, interact_manual
+
+
+# ## Define Helper Functions
+
+def load_model_and_classes(model_path, class_mapping_path):
+    """
+    Load the trained model and class mapping.
+    
+    Parameters
+    ----------
+    model_path : str
+        Path to the saved Keras model
+    class_mapping_path : str
+        Path to the JSON file containing class-to-index mapping
+        
+    Returns
+    -------
+    model : keras.Model
+        The loaded Keras model
+    idx_to_class : dict
+        Dictionary mapping indices to class names
+    """
+    # Load model
+    model = keras.models.load_model(model_path)
+    
+    # Load class mapping
+    with open(class_mapping_path, 'r') as f:
+        class_to_idx = json.load(f)
+    
+    # Create reverse mapping
+    idx_to_class = {idx: class_name for class_name, idx in class_to_idx.items()}
+    
+    return model, idx_to_class
+
+
+def preprocess_image(image_path, img_size=224):
+    """
+    Preprocess a single image for prediction.
+    
+    Parameters
+    ----------
+    image_path : str
+        Path to the image file
+    img_size : int
+        Target size for the image (default: 224)
+        
+    Returns
+    -------
+    img_array : np.ndarray
+        Preprocessed image array ready for prediction
+    """
+    # Open and convert image
+    with Image.open(image_path) as img:
+        # Convert to RGB if necessary
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Resize image
+        img = img.resize((img_size, img_size), Image.Resampling.LANCZOS)
+        
+        # Convert to numpy array
+        img_array = np.array(img, dtype=np.float32)
+        
+        # Normalize to [0, 1]
+        img_array = img_array / 255.0
+        
+        # Add batch dimension
+        img_array = np.expand_dims(img_array, axis=0)
+        
+    return img_array
+
+
+def predict_image(model, image_path, idx_to_class, img_size=224):
+    """
+    Predict the class of a single image.
+    
+    Parameters
+    ----------
+    model : keras.Model
+        The trained model
+    image_path : str
+        Path to the image file
+    idx_to_class : dict
+        Dictionary mapping indices to class names
+    img_size : int
+        Target size for the image (default: 224)
+        
+    Returns
+    -------
+    predicted_class : str
+        The predicted class name
+    confidence : float
+        The confidence score for the prediction
+    all_probs : dict
+        Dictionary with probabilities for all classes
+    """
+    # Preprocess image
+    img_array = preprocess_image(image_path, img_size)
+    
+    # Make prediction
+    predictions = model.predict(img_array, verbose=0)
+    
+    # Get predicted class
+    predicted_idx = np.argmax(predictions[0])
+    predicted_class = idx_to_class[predicted_idx]
+    confidence = predictions[0][predicted_idx]
+    
+    # Get all probabilities
+    all_probs = {idx_to_class[i]: float(predictions[0][i]) 
+                 for i in range(len(predictions[0]))}
+    
+    return predicted_class, confidence, all_probs
+
+
+def visualize_prediction(image_path, predicted_class, confidence, all_probs, show_all_probs=True):
+    """
+    Visualize the prediction results.
+
+    Parameters
+    ----------
+    image_path : str
+        Path to the image file
+    predicted_class : str
+        The predicted class name
+    confidence : float
+        The confidence score for the prediction
+    all_probs : dict
+        Dictionary with probabilities for all classes
+    show_all_probs : bool
+        Whether to show all class probabilities
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+    # Display image
+    img = Image.open(image_path)
+    ax1.imshow(img)
+    ax1.set_title(f'Input Image: {os.path.basename(image_path)}')
+    ax1.axis('off')
+
+    # Display probabilities
+    if show_all_probs:
+        sorted_probs = sorted(all_probs.items(), key=lambda x: x[1], reverse=True)
+        classes = [item[0] for item in sorted_probs]
+        probs = [item[1] for item in sorted_probs]
+
+        bars = ax2.barh(classes, probs)
+
+        # Highlight the predicted class
+        for i, (class_name, prob) in enumerate(sorted_probs):
+            if class_name == predicted_class:
+                bars[i].set_color('green')
+            else:
+                bars[i].set_color('lightblue')
+
+        ax2.set_xlabel('Probability')
+        ax2.set_title('Class Probabilities')
+        ax2.set_xlim(0, 1)
+
+        # Add probability values on bars
+        for i, (class_name, prob) in enumerate(sorted_probs):
+            ax2.text(prob + 0.01, i, f'{prob:.3f}', va='center')
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print results
+    print("="*50)
+    print(f"Predicted Class: {predicted_class}")
+    print(f"Confidence: {confidence:.4f} ({confidence*100:.2f}%)")
+    print("="*50)
+
+
+# ## Load Model and Class Mapping
+
+# Set default paths
+model_path = 'kather_kimianet_workspace/artifacts/kimianet_kather_classifier.keras'
+class_mapping_path = 'kather_kimianet_workspace/artifacts/class_to_idx.json'
+
+# Check if files exist
+if not os.path.exists(model_path):
+    print(f"Warning: Model file not found at {model_path}")
+    print("Please update the model_path variable with the correct path.")
+else:
+    print(f"Model found at: {model_path}")
+
+if not os.path.exists(class_mapping_path):
+    print(f"Warning: Class mapping file not found at {class_mapping_path}")
+    print("Please update the class_mapping_path variable with the correct path.")
+else:
+    print(f"Class mapping found at: {class_mapping_path}")
+
+
+# Load the model and class mapping
+try:
+    print("\nLoading model...")
+    model, idx_to_class = load_model_and_classes(model_path, class_mapping_path)
+    print("Model loaded successfully!")
+    print(f"\nAvailable classes: {list(idx_to_class.values())}")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    model = None
+    idx_to_class = None
+
+
+# ## Make Predictions on Images
+
+
+# Specify the path to your TIF image
+image_path = os.path.join("kather_kimianet_workspace", "data", "Kather_texture_2016_image_tiles_5000", "03_COMPLEX", "1A7D_CRC-Prim-HE-09_016.tif_Row_451_Col_751.tif")  # Update this with your image path
+
+# Make prediction if model is loaded
+if model is not None and os.path.exists(image_path):
+    predicted_class, confidence, all_probs = predict_image(model, image_path, idx_to_class)
+    visualize_prediction(image_path, predicted_class, confidence, all_probs)
+else:
+    if model is None:
+        print("Model not loaded. Please check the model path.")
+    else:
+        print(f"Image not found: {image_path}")
+        print("Please update the image_path variable with a valid path.")
+
+
+
 
